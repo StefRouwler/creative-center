@@ -2168,18 +2168,20 @@ function launchProblems(b, link, todo) {
   return p;
 }
 
-async function launchBrief(b) {
+async function launchBrief(b, retried = false) {
   if (!isAdmin()) return log('Only admins can launch ads to Meta.', 'err');
   const link = (b.link || S.settings.link).trim();
   const status = $('#launch-status').value;
   const todo = b.assets.filter(a => !a.adId).sort((x, y) => folderOf(x) - folderOf(y));
   const missing = launchProblems(b, link, todo);
   if (missing.length) return log('Missing: ' + missing.join(', '), 'err');
-  if (status === 'ACTIVE' && !confirm(`Create ${todo.length} ACTIVE ads? They start spending right away.`)) return;
+  if (status === 'ACTIVE' && !retried && !confirm(`Create ${todo.length} ACTIVE ads? They start spending right away.`)) return;
 
   const btn = $('#launch'); btn.disabled = true;
   let campaignId, target;
   try {
+    if (b.campaignMode === 'existing' && !await stillUsable({ id: b.campaignId, name: selectedCampaign(b)?.name || b.campaignId }, 'campaign'))
+      throw new Error('pick a campaign that is not archived, or create a new campaign');
     campaignId = await ensureCampaign(b, status);
     target = await ensureAdset(b, campaignId, status);
   } catch (err) {
@@ -2220,6 +2222,15 @@ async function launchBrief(b) {
   }
   save(); renderBoard();
   launching.delete(b.id);
+  // Meta can still refuse because the ad set got archived after we checked: make a new one and try once more
+  if (!retried && b.adsetMode !== 'existing' && todo.some(a => /archived ad set/i.test(a.note || ''))) {
+    log('The ad set is archived in Ads Manager. Making a new ad set and trying again…', 'err');
+    b.createdAdset = null; save();
+    if (btn.isConnected) btn.disabled = false;
+    return launchBrief(b, true);
+  }
+  if (retried && todo.some(a => /archived ad set/i.test(a.note || '')))
+    log('Even a brand-new ad set counts as archived, so the campaign itself is archived in Ads Manager. Pick another campaign (or unarchive it) and launch again.', 'err');
   log(`Done: ${ok}/${todo.length} ads created${ok < todo.length ? '. Press Launch again to retry the failed ones.' : '.'}`);
   if (btn.isConnected) btn.disabled = false;
 }
@@ -2235,9 +2246,11 @@ async function fioToMeta(a) {
 // Something made on an earlier launch can since have been archived or deleted in Ads Manager; then make a new one.
 async function stillUsable(made, what) {
   let st;
-  try { st = (await api(made.id, { params: { fields: 'effective_status' } })).effective_status; }
-  catch (err) { if (!/does not exist|deleted|Unsupported get request/i.test(err.message)) return true; st = 'DELETED'; }
-  if (st !== 'ARCHIVED' && st !== 'DELETED') return true;
+  try {
+    const r = await api(made.id, { params: { fields: 'status,effective_status' } });
+    st = [r.status, r.effective_status].find(x => x === 'ARCHIVED' || x === 'DELETED') || 'OK';
+  } catch (err) { if (!/does not exist|deleted|Unsupported get request/i.test(err.message)) return true; st = 'DELETED'; }
+  if (st === 'OK') return true;
   log(`The ${what} "${made.name}" was ${st.toLowerCase()} in Ads Manager, so a new one is made.`);
   return false;
 }

@@ -280,6 +280,7 @@
   .hf-h { display: flex; align-items: center; gap: 8px; font-size: 13px; min-width: 0; }
   .hf-t { flex: 1; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hf-drop { border: 1px dashed var(--border); background: none; color: var(--muted); font-weight: 400; font-size: 12px; padding: 8px; }
+  .hf-add { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
   .hf-drop:hover { color: var(--text); border-color: var(--accent); background: none; }
   .hfolder .asset { cursor: grab; }
   .assets { display: grid; gap: 6px; margin-top: 10px; }
@@ -449,6 +450,15 @@
         <div class="row" style="margin-top:10px">
           <button class="primary" id="test-conn">Test connection &amp; load pages</button>
           <label class="row hint" style="margin:0;font-weight:400"><input type="checkbox" data-s="remember"> Remember token in this browser</label>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Frame.io</h2>
+        <p class="sub">Connect once with your Adobe login. Then the team adds creatives as Frame.io links (any size, nothing is uploaded here), and launching sends the original file from Frame.io straight to Meta.</p>
+        <p class="hint" id="fio-status" style="margin:0">Checking…</p>
+        <div class="row" style="margin-top:10px">
+          <button class="primary" id="fio-connect">Connect Frame.io</button>
+          <button id="fio-disconnect" hidden>Disconnect</button>
         </div>
       </div>
       <div class="panel">
@@ -821,6 +831,13 @@ async function startApp() {
   $('#login').hidden = true;
   subscribe(); renderMe(); renderAll();
   if (oldLocal()?.briefs?.length && isAdmin()) toast('This browser still has briefs from the old version. Bring them over in Settings.');
+  const fio = /#frameio=([^&]*)/.exec(location.hash);
+  if (fio) {
+    history.replaceState(null, '', location.pathname + location.search);
+    const msg = decodeURIComponent(fio[1]);
+    toast(msg === 'connected' ? 'Frame.io is connected.' : 'Frame.io: ' + msg.replace(/^error:/, ''));
+    if (isAdmin()) { $('[data-tab=settings]').click(); }
+  }
 }
 async function boot() {
   const { data } = await sb.auth.getSession();
@@ -878,6 +895,55 @@ async function fileUrl(path) {
   return data.signedUrl;
 }
 
+// ================= Frame.io (through the "frameio" Edge Function, which keeps the Frame.io keys) =================
+// A creative can be a Frame.io link instead of an uploaded file (a.fio = { account, file, view }).
+// Signed Frame.io links expire, so they are fetched fresh and never saved.
+async function frameio(action, params = {}) {
+  const { data, error } = await sb.functions.invoke('frameio', { body: { action, ...params } });
+  if (error) {
+    const body = await error.context?.json?.().catch(() => null);
+    throw new Error(body?.error || error.message);
+  }
+  return data;
+}
+const fioCache = new Map();
+async function fioMedia(a) {
+  const c = fioCache.get(a.id);
+  if (c && c.exp > Date.now()) return c;
+  const m = { ...await frameio('media', { account: a.fio.account, file: a.fio.file }), exp: Date.now() + 20 * 60e3 };
+  fioCache.set(a.id, m);
+  return m;
+}
+const hasMedia = a => !!(a.path || a.fio);
+async function mediaUrl(a) {
+  if (a.fio) return fioMedia(a).then(m => m.preview, () => '');
+  return fileUrl(a.path);
+}
+// "HOOK 02.mp4" / "H2" goes into folder H2
+const hookFromName = name => { const m = /(?:^|[^a-z])h(?:ook)?[\s_-]*0*(\d{1,2})(?!\d)/i.exec(name); return m && +m[1] >= 1 && +m[1] <= HOOK_FOLDERS ? +m[1] : 0; };
+async function addFrameio(text, hook) {
+  const b = brief(openId);
+  const links = text.split(/\s+/).filter(l => /^https?:\/\//i.test(l));
+  if (!links.length) return toast('Paste a Frame.io link (a file, version stack, folder or share).');
+  let added = 0;
+  for (const link of links) {
+    toast('Looking up the Frame.io link…');
+    let items;
+    try { ({ items } = await frameio('resolve', { link })); }
+    catch (err) { toast('Frame.io: ' + err.message); continue; }
+    for (const it of items) {
+      if (b.assets.some(a => a.fio?.file === it.file)) continue;
+      b.assets.push({ id: uid(), name: it.name, file: it.filename, kind: it.kind, type: it.type, size: it.size, adId: '', state: 'ready', note: '',
+        hook: hookFromName(it.name) || hook, path: '', fio: { account: it.account, file: it.file, view: it.view } });
+      added++;
+    }
+  }
+  if (!added) return toast('Nothing new: no videos or images behind that link, or they are already added.');
+  if (b.status !== 'Launched' && ['Idea', 'Briefed', 'In production'].includes(b.status)) b.status = 'Review';
+  save(); openBrief(b.id);
+  toast(`Added ${added} creative${added === 1 ? '' : 's'} from Frame.io.`);
+}
+
 // files from the single-browser version, read once when bringing old data over
 function oldLocalFile(id) {
   return new Promise(res => {
@@ -902,6 +968,7 @@ document.querySelector('nav').onclick = e => {
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
   ['board', 'angles', 'insights', 'team', 'settings'].forEach(v => $('#v-' + v).hidden = v !== t);
   renderAll();
+  if (t === 'settings') fioStatus();
 };
 
 // non-admins (editors, strategists) don't get Settings or Meta launching
@@ -1232,6 +1299,23 @@ $('#inv-send').onclick = async () => {
   const ok = await sendInvite(t, null);
   $('#inv-msg').textContent = ok ? `${t.name} is on the team. Invite sent to ${email}.` : `${t.name} is on the team, but the invite email could not be sent (see the message below).`;
   if (ok) { $('#inv-name').value = ''; $('#inv-email').value = ''; }
+};
+async function fioStatus() {
+  try {
+    const s = await frameio('status');
+    $('#fio-status').textContent = s.connected ? `Connected${s.email ? ' as ' + s.email : ''}${s.mode === 's2s' ? ' (server-to-server)' : ''}.` : 'Not connected.';
+    $('#fio-connect').textContent = s.connected ? 'Reconnect' : 'Connect Frame.io';
+    $('#fio-disconnect').hidden = !(s.connected && s.mode === 'user');
+  } catch (err) { $('#fio-status').textContent = 'Frame.io is not set up yet: ' + err.message; }
+}
+$('#fio-connect').onclick = async () => {
+  try { location.href = (await frameio('authorize')).url; }
+  catch (err) { toast('Frame.io: ' + err.message); }
+};
+$('#fio-disconnect').onclick = async () => {
+  if (!confirm('Disconnect Frame.io? Creatives added as Frame.io links stop previewing until you connect again.')) return;
+  await frameio('disconnect').catch(err => toast('Frame.io: ' + err.message));
+  fioStatus();
 };
 $('#test-conn').onclick = async () => {
   try { await loadMeta(); renderSettings(); toast(`Connected. Found ${campaigns.length} campaigns, ${adsets.length} ad sets and ${pagesList().length} pages.`); }
@@ -1626,17 +1710,19 @@ $('#brief').addEventListener('change', e => {
 });
 async function renderAssets() {
   const b = brief(openId); if (!b) return;
-  const urls = await Promise.all(b.assets.map(a => fileUrl(a.path)));
+  // Frame.io gives a ready-made thumbnail, so those cards don't load the video itself
+  const urls = await Promise.all(b.assets.map(a => a.fio ? fioMedia(a).then(m => m.thumb ? { img: m.thumb } : m.preview, () => '') : fileUrl(a.path)));
   if (openId !== b.id || !$('#assets')) return;
   $('#assets').innerHTML = hookFolders(b, (a, i) => {
     const src = urls[i];
-    const media = !src ? '<video></video>' : a.kind === 'image' ? `<img src="${src}" alt="">` : `<video src="${src}#t=0.5" muted preload="metadata"></video>`;
+    const media = !src ? '<video></video>' : src.img ? `<img src="${esc(src.img)}" alt="">`
+      : a.kind === 'image' ? `<img src="${src}" alt="">` : `<video src="${src}#t=0.5" muted preload="metadata"></video>`;
     const state = a.adId ? 'live' : a.state;
     const cms = S.comments.filter(c => c.assetId === a.id), open = cms.filter(c => !c.resolved).length;
-    return `<div class="asset" draggable="true" data-asset="${a.id}"><button class="thumb" data-review="${a.id}" title="Review and comment" ${a.path ? '' : 'disabled'}>${media}</button>
+    return `<div class="asset" draggable="true" data-asset="${a.id}"><button class="thumb" data-review="${a.id}" title="Review and comment" ${hasMedia(a) ? '' : 'disabled'}>${media}</button>
       <div><b>${esc(a.name)}</b>
-        <div class="meta">${a.kind} · ${(a.size / 1e6).toFixed(1)} MB${a.note ? ' · ' + esc(a.note) : ''}${a.adId ? ' · ad ' + a.adId : ''}</div>
-        ${a.path ? `<button class="link-btn" data-review="${a.id}">${cms.length ? `💬 ${open} open · ${cms.length} comment${cms.length === 1 ? '' : 's'}` : '💬 Review & comment'}</button>` : ''}</div>
+        <div class="meta">${a.kind} · ${(a.size / 1e6).toFixed(1)} MB${a.fio ? ` · <a href="${esc(a.fio.view)}" target="_blank" rel="noopener">Frame.io</a>` : ''}${a.note ? ' · ' + esc(a.note) : ''}${a.adId ? ' · ad ' + a.adId : ''}</div>
+        ${hasMedia(a) ? `<button class="link-btn" data-review="${a.id}">${cms.length ? `💬 ${open} open · ${cms.length} comment${cms.length === 1 ? '' : 's'}` : '💬 Review & comment'}</button>` : ''}</div>
       <span class="badge ${{ live: 'ok', error: 'err', running: 'run', uploading: 'run' }[state] || ''}">${state}</span>
       <button class="icon" data-rm="${a.id}" aria-label="Remove file" ${a.state === 'running' ? 'disabled' : ''}>×</button>
     </div>`;
@@ -1655,11 +1741,17 @@ function hookFolders(b, card) {
       <div class="hf-h"><b>H${n}</b><span class="hf-t" title="${esc(hooks[i] || '')}">${esc(hooks[i] || 'No hook text yet')}</span>
         ${files.length ? `<span class="badge">${files.length > 1 ? files.length + ' ads' : '1 ad'}</span>` : ''}</div>
       ${files.map(a => card(a, b.assets.indexOf(a))).join('')}
-      <button class="hf-drop" data-pick="${n}">+ Drop or click to add</button>
+      <div class="hf-add"><button class="hf-drop" data-pick="${n}">+ Drop or click to add</button><button class="hf-drop" data-fio="${n}" title="Add from a Frame.io link">+ Frame.io</button></div>
     </div>`;
   }).join('');
 }
 $('#brief').addEventListener('click', e => {
+  const f = e.target.closest('[data-fio]');
+  if (f) {
+    const text = prompt(`Paste Frame.io link(s) for H${f.dataset.fio}. A folder link adds every video in it; files named "HOOK 2" or "H2" go to H2.`);
+    if (text) addFrameio(text, +f.dataset.fio);
+    return;
+  }
   const p = e.target.closest('[data-pick]'); if (!p) return;
   pickHook = +p.dataset.pick; $('#picker').click();
 });
@@ -2216,17 +2308,28 @@ async function ensureAdset(b, campaignId, status) {
 
 async function launchOne(b, a, link, adsetId, status) {
   const step = note => { a.note = note; renderAssets(); };
-  if (!a.path) throw new Error('file is not uploaded yet');
-  step('downloading file');
-  const blob = await downloadFile(a.path);
+  if (!hasMedia(a)) throw new Error('file is not uploaded yet');
+  // Frame.io: Meta fetches the original straight from Frame.io; uploaded files go through this browser
+  let blob, fio;
+  if (a.fio) { step('getting Frame.io link'); fio = await frameio('media', { account: a.fio.account, file: a.fio.file }); }
+  else { step('downloading file'); blob = await downloadFile(a.path); }
   const cta = { type: b.cta, value: { link } };
   const spec = { page_id: pageOf(b) };
   const ig = igOf(b);
   if (ig) spec.instagram_user_id = ig;
 
   if (a.kind === 'image') {
+    if (!blob) { step('getting image from Frame.io'); blob = await frameio('bytes', { account: a.fio.account, file: a.fio.file }); }
     step('uploading image');
     spec.link_data = compact({ image_hash: await uploadImage(blob, a.file), link, message: b.primary, name: b.headline, description: b.desc, caption: b.displayLink, call_to_action: cta });
+  } else if (fio) {
+    step('Meta is fetching the video from Frame.io');
+    const { id: videoId } = await api(`${acct()}/advideos`, { method: 'POST', params: { file_url: fio.original, title: a.name } });
+    step('waiting for Meta to process video');
+    await waitForVideo(videoId);
+    step('getting thumbnail');
+    const thumb = await metaThumb(videoId) || fio.thumb;
+    spec.video_data = compact({ video_id: videoId, image_url: thumb, message: b.primary, title: b.headline, link_description: b.desc, call_to_action: { ...cta, value: compact({ ...cta.value, link_caption: b.displayLink }) } });
   } else {
     const videoId = await uploadVideo(blob, a, step);
     step('uploading thumbnail');
@@ -2277,14 +2380,19 @@ async function uploadImage(blob, filename) {
   const r = await api(`${acct()}/adimages`, { method: 'POST', files: { filename: [blob, filename] } });
   return Object.values(r.images)[0].hash;
 }
+// the frame Meta picked as the video's cover
+async function metaThumb(videoId) {
+  const r = await api(`${videoId}/thumbnails`, { params: { fields: 'uri,is_preferred' } }).catch(() => ({ data: [] }));
+  return ((r.data || []).find(t => t.is_preferred) || r.data?.[0])?.uri || '';
+}
 async function waitForVideo(id) {
-  for (let i = 0; i < 100; i++) { // ~5 minutes
+  for (let i = 0; i < 200; i++) { // ~10 minutes: big files from Frame.io take Meta a while to fetch
     const s = (await api(id, { params: { fields: 'status' } })).status?.video_status;
     if (s === 'ready') return;
     if (s === 'error') throw new Error('Meta could not process this video');
     await new Promise(r => setTimeout(r, 3000));
   }
-  throw new Error('video still processing after 5 minutes, try again later');
+  throw new Error('video still processing after 10 minutes, try again later');
 }
 // Grab a frame from the video to use as the ad thumbnail
 function videoThumb(blob) {
@@ -2336,9 +2444,9 @@ function ago(iso) {
 }
 async function openViewer(briefId, assetId) {
   const b = brief(briefId), a = b?.assets.find(x => x.id === assetId);
-  if (!a?.path) return toast('This file is still uploading.');
+  if (!a || !hasMedia(a)) return toast('This file is still uploading.');
   viewer = { briefId, assetId };
-  const src = await fileUrl(a.path);
+  const src = await mediaUrl(a);
   if (!viewer || viewer.assetId !== assetId) return;
   $('#viewer').innerHTML = `
     <div class="page-top">

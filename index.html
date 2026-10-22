@@ -1726,15 +1726,16 @@ async function renderAssets() {
     const src = urls[i];
     const media = !src ? '<video></video>' : src.img ? `<img src="${esc(src.img)}" alt="">`
       : a.kind === 'image' ? `<img src="${src}" alt="">` : `<video src="${src}#t=0.5" muted preload="metadata"></video>`;
-    const state = a.adId ? 'live' : a.state;
+    const stale = !launching.has(b.id) && Date.now() - (b.launchBeat || 0) > 15 * 60e3; // no launch here or anywhere for 15 min
+    const state = a.adId ? 'live' : a.state === 'running' && stale ? 'interrupted' : a.state;
     const cms = S.comments.filter(c => c.assetId === a.id), open = cms.filter(c => !c.resolved).length;
     return `<div class="asset" data-asset="${a.id}"><button class="thumb" data-review="${a.id}" title="Review and comment" ${hasMedia(a) ? '' : 'disabled'}>${media}</button>
       <div><b>${esc(a.name)}</b>
         <div class="meta">${a.kind} · ${(a.size / 1e6).toFixed(1)} MB${a.fio ? ` · <a href="${esc(a.fio.view)}" target="_blank" rel="noopener">Frame.io</a>` : ''}${a.note ? ' · ' + esc(a.note) : ''}${a.adId ? ' · ad ' + a.adId : ''}</div>
         <select class="hook-pick" data-asset-hook="${a.id}" ${a.adId ? 'disabled' : ''}>${hookOpts(b, folderOf(a))}</select>
         ${hasMedia(a) ? `<button class="link-btn" data-review="${a.id}">${cms.length ? `💬 ${open} open · ${cms.length} comment${cms.length === 1 ? '' : 's'}` : '💬 Review & comment'}</button>` : ''}</div>
-      <span class="badge ${{ live: 'ok', error: 'err', running: 'run', uploading: 'run' }[state] || ''}">${state}</span>
-      <button class="icon" data-rm="${a.id}" aria-label="Remove file" ${a.state === 'running' ? 'disabled' : ''}>×</button>
+      <span class="badge ${{ live: 'ok', error: 'err', interrupted: 'err', running: 'run', uploading: 'run' }[state] || ''}">${state}</span>
+      <button class="icon" data-rm="${a.id}" aria-label="Remove file" ${state === 'running' ? 'disabled' : ''}>×</button>
     </div>`;
   }).join('');
 }
@@ -2185,6 +2186,20 @@ async function launchBrief(b) {
     log('Stopped: ' + err.message, 'err');
     btn.disabled = false; return;
   }
+  launching.add(b.id); b.launchBeat = Date.now();
+  log('Keep this page open until it says Done. Big videos take Meta a few minutes each.');
+  // Hand every Frame.io video to Meta at once, so Meta fetches and processes them side by side
+  // instead of one after another. The video id is kept, so a retry doesn't send the file again.
+  const sendNow = todo.filter(a => a.fio && a.kind === 'video' && !a.metaVideo);
+  if (sendNow.length) {
+    log(`Sending ${sendNow.length} video${sendNow.length > 1 ? 's' : ''} from Frame.io to Meta…`);
+    await Promise.all(sendNow.map(async a => {
+      a.state = 'running'; a.note = 'Meta is fetching the video from Frame.io'; renderAssets();
+      try { a.metaVideo = await fioToMeta(a); }
+      catch (err) { log(`✗ ${a.name}: could not send to Meta: ${err.message}`, 'err'); }
+    }));
+    save();
+  }
   let ok = 0;
   for (const a of todo) {
     a.state = 'running'; a.note = ''; renderAssets();
@@ -2204,8 +2219,17 @@ async function launchBrief(b) {
     const sel = $('#brief [data-f=status]'); if (sel) sel.value = 'Launched';
   }
   save(); renderBoard();
+  launching.delete(b.id);
   log(`Done: ${ok}/${todo.length} ads created${ok < todo.length ? '. Press Launch again to retry the failed ones.' : '.'}`);
   if (btn.isConnected) btn.disabled = false;
+}
+// briefs launching in this tab; a creative saved as "running" that isn't in here was interrupted
+const launching = new Set();
+window.addEventListener('beforeunload', e => { if (launching.size) { e.preventDefault(); e.returnValue = ''; } });
+async function fioToMeta(a) {
+  const fio = await frameio('media', { account: a.fio.account, file: a.fio.file });
+  const { id } = await api(`${acct()}/advideos`, { method: 'POST', params: { file_url: fio.original, title: a.name } });
+  return id;
 }
 
 // A new campaign is created once and reused on retries, as long as its settings didn't change.
@@ -2272,12 +2296,11 @@ async function ensureAdset(b, campaignId, status) {
 }
 
 async function launchOne(b, a, link, adsetId, status) {
-  const step = note => { a.note = note; renderAssets(); };
+  const step = note => { a.note = note; b.launchBeat = Date.now(); renderAssets(); };
   if (!hasMedia(a)) throw new Error('file is not uploaded yet');
   // Frame.io: Meta fetches the original straight from Frame.io; uploaded files go through this browser
-  let blob, fio;
-  if (a.fio) { step('getting Frame.io link'); fio = await frameio('media', { account: a.fio.account, file: a.fio.file }); }
-  else { step('downloading file'); blob = await downloadFile(a.path); }
+  let blob;
+  if (!a.fio) { step('downloading file'); blob = await downloadFile(a.path); }
   const cta = { type: b.cta, value: { link } };
   const spec = { page_id: pageOf(b) };
   const ig = igOf(b);
@@ -2287,13 +2310,14 @@ async function launchOne(b, a, link, adsetId, status) {
     if (!blob) { step('getting image from Frame.io'); blob = await frameio('bytes', { account: a.fio.account, file: a.fio.file }); }
     step('uploading image');
     spec.link_data = compact({ image_hash: await uploadImage(blob, a.file), link, message: b.primary, name: b.headline, description: b.desc, caption: b.displayLink, call_to_action: cta });
-  } else if (fio) {
-    step('Meta is fetching the video from Frame.io');
-    const { id: videoId } = await api(`${acct()}/advideos`, { method: 'POST', params: { file_url: fio.original, title: a.name } });
+  } else if (a.fio) {
+    if (!a.metaVideo) { step('Meta is fetching the video from Frame.io'); a.metaVideo = await fioToMeta(a); save(); }
+    const videoId = a.metaVideo;
     step('waiting for Meta to process video');
-    await waitForVideo(videoId);
+    try { await waitForVideo(videoId); }
+    catch (err) { if (/could not process/.test(err.message)) { a.metaVideo = ''; } throw err; }
     step('getting thumbnail');
-    const thumb = await metaThumb(videoId) || fio.thumb;
+    const thumb = await metaThumb(videoId) || await fioMedia(a).then(m => m.thumb, () => '');
     spec.video_data = compact({ video_id: videoId, image_url: thumb, message: b.primary, title: b.headline, link_description: b.desc, call_to_action: { ...cta, value: compact({ ...cta.value, link_caption: b.displayLink }) } });
   } else {
     const videoId = await uploadVideo(blob, a, step);
@@ -2352,6 +2376,7 @@ async function metaThumb(videoId) {
 }
 async function waitForVideo(id) {
   for (let i = 0; i < 200; i++) { // ~10 minutes: big files from Frame.io take Meta a while to fetch
+    if (i % 20 === 0) { const b = brief(openId); if (b && launching.has(b.id)) { b.launchBeat = Date.now(); save(); } } // tell other screens it's still going
     const s = (await api(id, { params: { fields: 'status' } })).status?.video_status;
     if (s === 'ready') return;
     if (s === 'error') throw new Error('Meta could not process this video');

@@ -108,6 +108,11 @@
   .col-h .n { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--muted); }
   .bc { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--r); padding: 9px 10px; margin-bottom: 6px; cursor: pointer; box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s, transform .15s; }
   .bc:hover { border-color: var(--border); box-shadow: 0 4px 12px rgba(24,24,27,.08); transform: translateY(-1px); }
+  .bc { position: relative; }
+  .bc-dup { position: absolute; top: 5px; right: 5px; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 14px; line-height: 1; opacity: 0; transition: opacity .15s, background .15s; }
+  .bc:hover .bc-dup, .bc-dup:focus-visible { opacity: 1; }
+  .bc-dup:hover { background: var(--sunken); color: var(--text); }
+  @media (hover: none) { .bc-dup { opacity: 1; } }
   .bc .code { font-size: 13px; font-weight: 700; letter-spacing: -.01em; font-variant-numeric: tabular-nums; margin-bottom: 5px; }
   .tags { display: flex; flex-wrap: wrap; gap: 3px; }
   .chip { font-size: 11px; font-weight: 500; padding: 1px 6px; border-radius: 4px; background: var(--sunken); color: var(--muted); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
@@ -452,19 +457,6 @@
         <div class="row" style="margin-top:10px">
           <button class="primary" id="fio-connect">Connect Frame.io</button>
           <button id="fio-disconnect" hidden>Disconnect</button>
-        </div>
-      </div>
-      <div class="panel">
-        <h2>Defaults for new briefs</h2>
-        <div class="grid">
-          <div><label>Website URL</label><input data-s="link" placeholder="https://yourstore.com/product"></div>
-          <div><label>Call to action</label><select data-s="cta" class="cta-opts"></select></div>
-          <div><label>Countries</label><input data-s="countries" placeholder="US"></div>
-          <div><label>Daily ad set budget, ABO</label><input data-s="adsetBudget" type="number" min="1" placeholder="e.g. 20"></div>
-          <div class="full"><label>Default primary text</label><textarea data-s="adPrimary" style="min-height:120px"></textarea></div>
-          <div><label>Default headline</label><input data-s="adHeadline"></div>
-          <div><label>Default description</label><input data-s="adDesc"></div>
-          <div class="full"><label>URL parameters</label><input data-s="utm" placeholder="utm_source=facebook&utm_medium=paid&utm_content={{ad.name}}"></div>
         </div>
       </div>
       <div class="panel">
@@ -1002,6 +994,7 @@ function card(b) {
     (n => n ? `💬 ${n} open` : '')(S.comments.filter(c => c.briefId === b.id && !c.resolved).length),
   ].filter(Boolean).join(' · ');
   return `<div class="bc" draggable="true" data-open="${b.id}">
+    <button class="bc-dup" data-dup="${b.id}" title="Duplicate brief" aria-label="Duplicate ${esc(b.code)}">⧉</button>
     <div class="code">${esc(b.code)}</div>
     <div class="tags">
       ${b.result ? `<span class="chip res-${b.result}">${b.result === 'winner' ? '▲ Winner' : '▼ Loser'}</span>` : ''}
@@ -1051,7 +1044,18 @@ $('#new-brief').onclick = () => {
   S.briefs.push(b); save(); renderBoard(); openBrief(b.id);
 };
 const board = $('#board');
-board.onclick = e => { const c = e.target.closest('[data-open]'); if (c) openBrief(c.dataset.open); };
+board.onclick = e => {
+  const d = e.target.closest('[data-dup]');
+  if (d) return duplicateBrief(brief(d.dataset.dup));
+  const c = e.target.closest('[data-open]'); if (c) openBrief(c.dataset.open);
+};
+// Copy of the brief (hooks, script, angle, team, launch settings) as a new, unlaunched brief: no files, ads or results.
+function duplicateBrief(src) {
+  const b = { ...structuredClone(src), id: uid(), code: nextCode(), status: 'Idea', assets: [], result: '', feedback: '', launched: '',
+    createdCampaign: null, createdAdset: null, fioFolder: '', month: viewMonth || src.month, created: new Date().toISOString().slice(0, 10) };
+  S.briefs.push(b); save(); renderBoard();
+  toast(`${src.code} duplicated as ${b.code}.`);
+}
 board.ondragstart = e => { const c = e.target.closest('[data-open]'); if (c) e.dataTransfer.setData('text/plain', c.dataset.open); };
 board.ondragover = e => {
   const col = e.target.closest('.col'); if (!col) return;

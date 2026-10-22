@@ -664,13 +664,13 @@ async function push() {
     S.angles.forEach(o => add('angle', o));
     S.comments.forEach(o => add('comment', o));
     if (admin) S.team.forEach(o => add('member', o));
-    add('settings', sharedSettings());
+    if (admin) add('settings', sharedSettings());
     const ups = [];
     for (const [id, { kind, o }] of now) {
       const j = stable(o);
       if (synced.get(id) !== j) ups.push({ id, kind, j });
     }
-    const dels = [...synced.keys()].filter(id => !now.has(id) && (admin || syncedKind.get(id) !== 'member'));
+    const dels = [...synced.keys()].filter(id => !now.has(id) && (admin || !['member', 'settings'].includes(syncedKind.get(id))));
     if (ups.length) {
       ups.forEach(u => inflight.set(u.id, u.j));
       const { error } = await sb.from('items').upsert(ups.map(u => ({ id: u.id, kind: u.kind, data: JSON.parse(u.j), updated_at: new Date().toISOString() })));
@@ -898,13 +898,19 @@ function oldLocal() { try { return JSON.parse(localStorage.getItem(OLD_KEY)); } 
 // ================= tabs =================
 document.querySelector('nav').onclick = e => {
   const t = e.target.dataset.tab;
-  if (!t) return;
+  if (!t || (t === 'settings' && !isAdmin())) return;
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
   ['board', 'angles', 'insights', 'team', 'settings'].forEach(v => $('#v-' + v).hidden = v !== t);
   renderAll();
 };
 
-function renderAll() { renderFilters(); renderBoard(); renderAngles(); renderInsights(); renderTeam(); renderSettings(); }
+// non-admins (editors, strategists) don't get Settings or Meta launching
+function applyAccess() {
+  const admin = isAdmin();
+  $('[data-tab=settings]').hidden = !admin;
+  if (!admin && !$('#v-settings').hidden) $('[data-tab=board]').click();
+}
+function renderAll() { applyAccess(); renderFilters(); renderBoard(); renderAngles(); renderInsights(); renderTeam(); renderSettings(); }
 
 // ================= board =================
 function renderFilters() {
@@ -1329,7 +1335,7 @@ function openBrief(id) {
     <div class="hfolders" id="assets"></div>
 
     </div>
-    <div class="panel"><h3>Launch</h3>
+    ${isAdmin() ? `    <div class="panel"><h3>Launch</h3>
     <div id="launch-form">${launchForm(b)}</div>
     <div class="lstep">
       <div class="lstep-h">3 · Ads</div>
@@ -1373,6 +1379,7 @@ function openBrief(id) {
     <div id="log"></div>
 
     </div>
+` : `<div class="panel"><h3>Launch</h3><p class="hint" style="margin:0">Only admins can launch ads to Meta.</p></div>`}
     <div class="panel"><h3>Result</h3>
       <div class="grid">
         <div><label>How did it perform?</label><select data-f="result">${opts(RESULTS.map(r => [r.k, r.label]), b.result)}</select></div>
@@ -2104,6 +2111,7 @@ function launchProblems(b, link, todo) {
 }
 
 async function launchBrief(b) {
+  if (!isAdmin()) return log('Only admins can launch ads to Meta.', 'err');
   const link = (b.link || S.settings.link).trim();
   const status = $('#launch-status').value;
   const todo = b.assets.filter(a => !a.adId).sort((x, y) => folderOf(x) - folderOf(y));

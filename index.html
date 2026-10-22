@@ -2232,12 +2232,21 @@ async function fioToMeta(a) {
   return id;
 }
 
+// Something made on an earlier launch can since have been archived or deleted in Ads Manager; then make a new one.
+async function stillUsable(made, what) {
+  let st;
+  try { st = (await api(made.id, { params: { fields: 'effective_status' } })).effective_status; }
+  catch (err) { if (!/does not exist|deleted|Unsupported get request/i.test(err.message)) return true; st = 'DELETED'; }
+  if (st !== 'ARCHIVED' && st !== 'DELETED') return true;
+  log(`The ${what} "${made.name}" was ${st.toLowerCase()} in Ads Manager, so a new one is made.`);
+  return false;
+}
 // A new campaign is created once and reused on retries, as long as its settings didn't change.
 async function ensureCampaign(b, status) {
   if (b.campaignMode === 'existing') return b.campaignId;
   const name = campaignName(b), cbo = b.budgetType === 'CBO';
   const sig = [name, b.objective, b.budgetType, cbo ? minor(b.campaignBudget) : ''].join('|');
-  if (b.createdCampaign?.id && b.createdCampaign.sig === sig) {
+  if (b.createdCampaign?.id && b.createdCampaign.sig === sig && await stillUsable(b.createdCampaign, 'campaign')) {
     log(`Using campaign "${b.createdCampaign.name}" (${b.createdCampaign.id})`);
     return b.createdCampaign.id;
   }
@@ -2261,7 +2270,7 @@ async function ensureAdset(b, campaignId, status) {
   if (b.adsetMode === 'existing') return b.adsetId;
   const name = adsetName(b), cbo = launchIsCBO(b);
   const sig = [b.adsetMode, JSON.stringify(adsetConfig(b)), campaignId, b.version, b.adsetId, b.countries, launchEvent(b), b.advantage, b.ageMin, b.ageMax, cbo ? '' : minor(b.adsetBudget)].join('|');
-  if (b.createdAdset?.id && b.createdAdset.sig === sig) {
+  if (b.createdAdset?.id && b.createdAdset.sig === sig && await stillUsable(b.createdAdset, 'ad set')) {
     log(`Using ad set "${b.createdAdset.name}" (${b.createdAdset.id})`);
     return b.createdAdset.id;
   }

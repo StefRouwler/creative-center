@@ -583,6 +583,8 @@ function migrate() {
     if (!b.usDefaults) { if (!b.countries || b.countries === 'NL') b.countries = 'US'; b.placementMode = 'auto'; b.usDefaults = true; }
     // manual placements (Facebook + Instagram) are the default again
     if (!b.manualPlacementsV2) { b.placementMode = 'manual'; b.platforms = ['facebook', 'instagram']; b.manualPlacementsV2 = true; }
+    // Advantage+ audience is the default now: only the country is picked
+    if (!b.advantageAudienceV1) { b.advantage = true; b.advantageAudienceV1 = true; }
   });
   if (!S.settings.countries || S.settings.countries === 'NL') S.settings.countries = 'US';
   // fill in the ad defaults (only where nothing is set yet)
@@ -1861,11 +1863,10 @@ function adsetFields(b, cbo, cur, obj) {
     <div><label>End date ${!cbo && b.budgetKind === 'lifetime' ? '(required)' : '(optional)'}</label><input type="datetime-local" data-f="endTime" value="${esc(b.endTime)}"></div>
 
     <div class="full sub-h">Audience</div>
-    <div class="full"><label class="row" style="margin:0;font-weight:500"><input type="checkbox" data-f="advantage" ${b.advantage ? 'checked' : ''}> Advantage+ audience (Meta may go beyond your settings)</label></div>
-    <div class="full"><label>Locations (country codes)</label><input data-f="countries" value="${esc(b.countries)}" placeholder="US"></div>
-    <div><label>Minimum age</label><input type="number" min="18" max="${b.advantage ? 25 : 65}" data-f="ageMin" value="${esc(b.ageMin)}"></div>
-    ${b.advantage ? '<div class="hint" style="align-self:end">With Advantage+ audience the maximum age is 65 and the minimum 18 to 25.</div>'
-      : `<div><label>Maximum age</label><input type="number" min="18" max="65" data-f="ageMax" value="${esc(b.ageMax)}"></div>`}
+    <div class="full"><label class="row" style="margin:0;font-weight:500"><input type="checkbox" data-f="advantage" ${b.advantage ? 'checked' : ''}> Advantage+ audience (Meta finds the audience, you only pick the country)</label></div>
+    <div class="full"><label>Country</label><select data-f="countries">${opts(countryOpts(b.countries), b.countries)}</select></div>
+    ${b.advantage ? '' : `<div><label>Minimum age</label><input type="number" min="18" max="${b.advantage ? 25 : 65}" data-f="ageMin" value="${esc(b.ageMin)}"></div>
+    <div><label>Maximum age</label><input type="number" min="18" max="65" data-f="ageMax" value="${esc(b.ageMax)}"></div>
     <div><label>Gender</label><select data-f="gender">${opts([['all', 'All'], ['1', 'Men'], ['2', 'Women']], b.gender)}</select></div>
     <div></div>
     <div class="full"><label>Custom audiences</label>${audienceList('audIncl')}</div>
@@ -1873,7 +1874,7 @@ function adsetFields(b, cbo, cur, obj) {
       <div class="chips">${(b.interests || []).map(i => `<span class="chip">${esc(i.name)} <button class="icon" data-rm-interest="${esc(i.id)}" aria-label="Remove">×</button></span>`).join('')}</div>
       <input id="int-q" placeholder="Search interests, e.g. skincare" autocomplete="off">
       <div class="int-results" id="int-results"></div></div>
-    <div class="full"><label>Exclude custom audiences</label>${audienceList('audExcl')}</div>
+    <div class="full"><label>Exclude custom audiences</label>${audienceList('audExcl')}</div>`}
 
     <div class="full sub-h">Placements</div>
     <div class="full"><select data-f="placementMode">${opts([['manual', 'Manual placements'], ['auto', 'Advantage+ placements (Meta decides)']], b.placementMode)}</select></div>
@@ -1884,7 +1885,7 @@ function adsetFields(b, cbo, cur, obj) {
 function adsetFieldProblems(b, cbo, obj) {
   const p = [];
   const goal = perfGoal(b, obj), strategy = b.bidStrategy || 'LOWEST_COST_WITHOUT_CAP';
-  if (!countryList(b).length) p.push('at least one country code (like NL)');
+  if (!countryList(b).length) p.push('a country');
   if (usesEvent(goal) && !S.settings.pixel) p.push('your Pixel / dataset ID (Settings)');
   if (cbo && needsBidValue(campaignStrategy(b)) && !(parseFloat(String(b.bidValue).replace(',', '.')) > 0))
     p.push(campaignStrategy(b) === 'LOWEST_COST_WITH_MIN_ROAS' ? 'a minimum ROAS (the campaign uses a ROAS goal)' : `a ${campaignStrategy(b) === 'COST_CAP' ? 'cost per result goal' : 'bid cap'} amount (the campaign uses one)`);
@@ -1894,8 +1895,8 @@ function adsetFieldProblems(b, cbo, obj) {
     if (b.budgetKind === 'lifetime' && !b.endTime) p.push('an end date (needed for a lifetime budget)');
   }
   if (b.endTime && new Date(b.endTime) <= new Date(b.startTime || Date.now())) p.push('an end date after the start');
-  const min = +b.ageMin || 18, max = b.advantage ? 65 : +b.ageMax || 65;
-  if (min < 18 || (b.advantage && min > 25) || max > 65 || min > max) p.push(b.advantage ? 'a minimum age between 18 and 25' : 'an age range between 18 and 65');
+  const min = +b.ageMin || 18, max = +b.ageMax || 65;
+  if (!b.advantage && (min < 18 || max > 65 || min > max)) p.push('an age range between 18 and 65');
   if (b.placementMode === 'manual' && !(b.platforms || []).length) p.push('at least one placement platform');
   return p;
 }
@@ -1903,15 +1904,15 @@ function adsetFieldProblems(b, cbo, obj) {
 function adsetParams(b, name, campaignId, status, cbo, obj) {
   const goal = perfGoal(b, obj), strategy = b.bidStrategy || 'LOWEST_COST_WITHOUT_CAP';
   const targeting = { geo_locations: { countries: countryList(b) }, targeting_automation: { advantage_audience: b.advantage ? 1 : 0 } };
-  if (b.advantage) targeting.age_min = Math.min(Math.max(+b.ageMin || 18, 18), 25);
-  else {
+  // Advantage+ audience: only the country, Meta finds the people
+  if (!b.advantage) {
     targeting.age_min = Math.max(+b.ageMin || 18, 18);
     targeting.age_max = Math.min(+b.ageMax || 65, 65);
+    if (b.gender === '1' || b.gender === '2') targeting.genders = [+b.gender];
+    if ((b.interests || []).length) targeting.flexible_spec = [{ interests: b.interests.map(i => ({ id: i.id, name: i.name })) }];
+    if ((b.audIncl || []).length) targeting.custom_audiences = b.audIncl.map(id => ({ id }));
+    if ((b.audExcl || []).length) targeting.excluded_custom_audiences = b.audExcl.map(id => ({ id }));
   }
-  if (b.gender === '1' || b.gender === '2') targeting.genders = [+b.gender];
-  if ((b.interests || []).length) targeting.flexible_spec = [{ interests: b.interests.map(i => ({ id: i.id, name: i.name })) }];
-  if ((b.audIncl || []).length) targeting.custom_audiences = b.audIncl.map(id => ({ id }));
-  if ((b.audExcl || []).length) targeting.excluded_custom_audiences = b.audExcl.map(id => ({ id }));
   if (b.placementMode === 'manual') targeting.publisher_platforms = b.platforms;
 
   const params = { name, campaign_id: campaignId, status, billing_event: 'IMPRESSIONS', optimization_goal: goal, targeting };
@@ -2062,6 +2063,12 @@ function minor(v) {
   const n = parseFloat(String(v ?? '').replace(',', '.'));
   return n > 0 ? Math.round(n * 100) : 0;
 }
+const COUNTRIES = [['US', 'United States'], ['CA', 'Canada'], ['GB', 'United Kingdom'], ['AU', 'Australia'], ['NZ', 'New Zealand'], ['IE', 'Ireland'],
+  ['NL', 'Netherlands'], ['BE', 'Belgium'], ['DE', 'Germany'], ['FR', 'France'], ['ES', 'Spain'], ['IT', 'Italy'], ['AT', 'Austria'], ['CH', 'Switzerland'],
+  ['SE', 'Sweden'], ['NO', 'Norway'], ['DK', 'Denmark'], ['FI', 'Finland'], ['PL', 'Poland'], ['PT', 'Portugal'], ['AE', 'United Arab Emirates'],
+  ['SA', 'Saudi Arabia'], ['SG', 'Singapore'], ['ZA', 'South Africa'], ['MX', 'Mexico'], ['BR', 'Brazil']];
+// a saved value that isn't in the list (e.g. "US, CA") stays selectable
+const countryOpts = cur => COUNTRIES.some(([c]) => c === cur) || !cur ? COUNTRIES : [[cur, cur], ...COUNTRIES];
 const countryList = b => String(b.countries || '').split(/[\s,;]+/).map(c => c.trim().toUpperCase()).filter(c => /^[A-Z]{2}$/.test(c));
 const selectedCampaign = b => campaigns.find(c => c.id === b.campaignId);
 const launchObjective = b => b.campaignMode === 'new' ? b.objective : selectedCampaign(b)?.objective;
@@ -2073,7 +2080,7 @@ function launchEvent(b) {
 }
 function launchDefaults() {
   return { campaignName: '', objective: 'OUTCOME_SALES', budgetType: 'CBO', campaignBudget: S?.settings?.campaignBudget || '',
-    countries: S?.settings?.countries || 'US', advantage: false, ageMin: '18', ageMax: '65', adsetBudget: S?.settings?.adsetBudget || '', event: 'PURCHASE',
+    countries: S?.settings?.countries || 'US', advantage: true, ageMin: '18', ageMax: '65', adsetBudget: S?.settings?.adsetBudget || '', event: 'PURCHASE',
     perfGoal: '', budgetKind: 'daily', bidStrategy: 'LOWEST_COST_WITHOUT_CAP', bidValue: '', startTime: '', endTime: '', gender: 'all',
     interests: [], audIncl: [], audExcl: [], placementMode: 'manual', platforms: ['facebook', 'instagram'], attribution: '7c1v',
     displayLink: '', multiAdvertiser: false, enhancements: false, partnership: false, partnerIg: '', partnerIgName: '', partnerPage: '' };

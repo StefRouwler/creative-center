@@ -296,9 +296,9 @@
   .chk-list { max-height: 150px; overflow-y: auto; border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 10px; display: grid; }
   .copy-opt { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: start; margin-top: 6px; }
   .copy-tools { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; margin-top: 4px; }
-  .copy-lib { border: 1px solid var(--border-soft); border-radius: var(--r); background: var(--sunken); padding: 6px; margin-top: 6px; display: grid; gap: 4px; max-height: 260px; overflow: auto; }
-  .copy-lib .item { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; background: var(--surface); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; }
-  .copy-lib .item span { white-space: pre-wrap; max-height: 3.6em; overflow: hidden; }
+  .copy-lib { border: 1px solid var(--border-soft); border-radius: var(--r); background: var(--sunken); padding: 6px; margin-top: 6px; display: grid; gap: 4px; max-height: 420px; overflow: auto; }
+  .copy-lib .item { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: start; background: var(--surface); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; }
+  .copy-lib .item span { white-space: pre-wrap; max-height: 12em; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
   .chips:empty { display: none; }
   .chips .chip { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-size: 12px; padding: 2px 4px 2px 8px; }

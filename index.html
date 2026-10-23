@@ -294,6 +294,11 @@
   .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); font-weight: 400; margin: 0 14px 6px 0; }
   .chk-row { display: flex; flex-wrap: wrap; }
   .chk-list { max-height: 150px; overflow-y: auto; border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 10px; display: grid; }
+  .copy-opt { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: start; margin-top: 6px; }
+  .copy-tools { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; margin-top: 4px; }
+  .copy-lib { border: 1px solid var(--border-soft); border-radius: var(--r); background: var(--sunken); padding: 6px; margin-top: 6px; display: grid; gap: 4px; max-height: 260px; overflow: auto; }
+  .copy-lib .item { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; background: var(--surface); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; }
+  .copy-lib .item span { white-space: pre-wrap; max-height: 3.6em; overflow: hidden; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
   .chips:empty { display: none; }
   .chips .chip { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-size: 12px; padding: 2px 4px 2px 8px; }
@@ -1444,8 +1449,8 @@ function openBrief(id) {
       </div>
       <div class="sub-h">Ad creative</div>
       <div class="grid" style="margin-bottom:10px">
-        <div class="full"><label>Primary text</label><textarea data-f="primary">${esc(b.primary)}</textarea></div>
-        <div><label>Headline</label><input data-f="headline" value="${esc(b.headline)}"></div>
+        <div class="full" id="copy-primary">${copyField(b, 'primary')}</div>
+        <div class="full" id="copy-headline">${copyField(b, 'headline')}</div>
         <div><label>Description (optional)</label><input data-f="desc" value="${esc(b.desc)}"></div>
         <div><label>Call to action</label><select data-f="cta">${opts(CTAS.map(c => [c, c]), b.cta)}</select></div>
         <div></div>
@@ -1983,6 +1988,60 @@ const ENHANCEMENTS_ALL = ['adapt_to_placement', 'add_text_overlay', 'description
 const ENHANCEMENTS_DEFAULTS = ['inline_comment', 'enhance_cta', 'video_filtering', 'reveal_details_over_time', 'pac_relaxation', 'image_touchups', 'text_optimizations', 'adapt_to_placement', 'add_text_overlay', 'description_automation'];
 const ENHANCEMENTS_CORE = ['adapt_to_placement', 'add_text_overlay', 'description_automation', 'inline_comment'];
 const optOut = keys => ({ creative_features_spec: Object.fromEntries(keys.map(k => [k, { enroll_status: 'OPT_OUT' }])) });
+// ================= text options: up to 5 primary texts and 5 headlines per ad, plus a saved list =================
+const COPY = { primary: { label: 'Primary text', alt: 'primaryAlt', many: 'primary texts' }, headline: { label: 'Headline', alt: 'headlineAlt', many: 'headlines' } };
+const MAX_COPY = 5;
+// all filled-in options of one kind, the main field first, without doubles
+const copyOptions = (b, kind) => [...new Set([b[kind], ...(b[COPY[kind].alt] || [])].map(t => String(t || '').trim()).filter(Boolean))];
+const copyLib = kind => (S.settings.copyLib || {})[kind] || [];
+let copyLibOpen = '';
+function copyField(b, kind) {
+  const c = COPY[kind], alts = b[c.alt] || [], lib = copyLib(kind);
+  const field = (v, attrs) => kind === 'primary' ? `<textarea ${attrs}>${esc(v)}</textarea>` : `<input ${attrs} value="${esc(v)}">`;
+  return `<label>${c.label}${alts.length ? ` <span class="hint">· ${alts.length + 1} options, Meta shows the best one</span>` : ''}</label>
+    ${field(b[kind], `data-f="${kind}"`)}
+    ${alts.map((v, i) => `<div class="copy-opt">${field(v, `data-alt="${kind}" data-i="${i}" placeholder="${c.label} option ${i + 2}"`)}<button class="icon" data-rm-alt="${kind}" data-i="${i}" aria-label="Remove option">×</button></div>`).join('')}
+    <div class="copy-tools">
+      ${alts.length + 1 < MAX_COPY ? `<button class="link-btn" data-add-alt="${kind}">+ Add ${kind === 'primary' ? 'primary text' : 'headline'} option</button>` : `<span class="hint">Max ${MAX_COPY} ${c.many}</span>`}
+      <button class="link-btn" data-save-copy="${kind}">Save ${c.many}</button>
+      <button class="link-btn" data-lib="${kind}">Saved ${c.many} (${lib.length}) ${copyLibOpen === kind ? '▴' : '▾'}</button>
+    </div>
+    ${copyLibOpen === kind ? `<div class="copy-lib">${lib.length ? lib.map((t, i) => `<div class="item"><span>${esc(t)}</span>
+      <button class="link-btn" data-use-copy="${kind}" data-i="${i}">Use</button><button class="icon" data-del-copy="${kind}" data-i="${i}" aria-label="Delete saved text">×</button></div>`).join('')
+      : `<p class="hint" style="margin:4px">Nothing saved yet. Write ${c.many} above and press "Save ${c.many}".</p>`}</div>` : ''}`;
+}
+const renderCopy = (b, kind) => { const el = $('#copy-' + kind); if (el) el.innerHTML = copyField(b, kind); };
+$('#brief').addEventListener('input', e => {
+  const kind = e.target.dataset.alt; if (!kind) return;
+  const b = brief(openId); (b[COPY[kind].alt] ||= [])[+e.target.dataset.i] = e.target.value; save();
+});
+$('#brief').addEventListener('click', e => {
+  const t = e.target.closest('[data-add-alt],[data-rm-alt],[data-save-copy],[data-lib],[data-use-copy],[data-del-copy]'); if (!t) return;
+  const b = brief(openId), d = t.dataset;
+  const kind = d.addAlt || d.rmAlt || d.saveCopy || d.lib || d.useCopy || d.delCopy, alt = COPY[kind].alt;
+  if (d.addAlt) { b[alt] = [...(b[alt] || []), '']; save(); renderCopy(b, kind); $(`#copy-${kind} [data-alt][data-i="${b[alt].length - 1}"]`)?.focus(); return; }
+  if (d.rmAlt) { b[alt].splice(+d.i, 1); save(); }
+  if (d.lib) copyLibOpen = copyLibOpen === kind ? '' : kind;
+  if (d.saveCopy) {
+    const have = copyLib(kind), add = copyOptions(b, kind).filter(x => !have.includes(x));
+    if (!add.length) toast(copyOptions(b, kind).length ? `These ${COPY[kind].many} are already saved.` : `Write a ${COPY[kind].label.toLowerCase()} first.`);
+    else { S.settings.copyLib = { ...(S.settings.copyLib || {}), [kind]: [...add, ...have] }; save(); toast(`Saved ${add.length} ${add.length === 1 ? COPY[kind].label.toLowerCase() : COPY[kind].many}.`); }
+  }
+  if (d.useCopy) {
+    const text = copyLib(kind)[+d.i];
+    if (copyOptions(b, kind).includes(text)) toast('That text is already on this brief.');
+    else if (!String(b[kind] || '').trim()) b[kind] = text;
+    else if ((b[alt] || []).length + 1 >= MAX_COPY) toast(`This brief already has ${MAX_COPY} ${COPY[kind].many}. Remove one first.`);
+    else b[alt] = [...(b[alt] || []).filter(x => String(x).trim()), text];
+    save();
+  }
+  if (d.delCopy) {
+    if (!confirm('Delete this saved text? Briefs that already use it keep it.')) return;
+    S.settings.copyLib = { ...S.settings.copyLib, [kind]: copyLib(kind).filter((_, i) => i !== +d.i) }; save();
+  }
+  renderCopy(b, kind);
+});
+
 // Meta's list of enhancements changes often; if it rejects one, retry with the core list, then without.
 async function createCreative(creative, b) {
   const post = params => api(`${acct()}/adcreatives`, { method: 'POST', params }).then(r => r.id);
@@ -2334,11 +2393,13 @@ async function launchOne(b, a, link, adsetId, status) {
   const spec = { page_id: pageOf(b) };
   const ig = igOf(b);
   if (ig) spec.instagram_user_id = ig;
+  let media;
 
   if (a.kind === 'image') {
     if (!blob) { step('getting image from Frame.io'); blob = await frameio('bytes', { account: a.fio.account, file: a.fio.file }); }
     step('uploading image');
-    spec.link_data = compact({ image_hash: await uploadImage(blob, a.file), link, message: b.primary, name: b.headline, description: b.desc, caption: b.displayLink, call_to_action: cta });
+    media = { image: await uploadImage(blob, a.file) };
+    spec.link_data = compact({ image_hash: media.image, link, message: b.primary, name: b.headline, description: b.desc, caption: b.displayLink, call_to_action: cta });
   } else if (a.fio) {
     if (!a.metaVideo) { step('Meta is fetching the video from Frame.io'); a.metaVideo = await fioToMeta(a); save(); }
     const videoId = a.metaVideo;
@@ -2347,6 +2408,7 @@ async function launchOne(b, a, link, adsetId, status) {
     catch (err) { if (/could not process/.test(err.message)) { a.metaVideo = ''; } throw err; }
     step('getting thumbnail');
     const thumb = await metaThumb(videoId) || await fioMedia(a).then(m => m.thumb, () => '');
+    media = { video: videoId, thumbUrl: thumb };
     spec.video_data = compact({ video_id: videoId, image_url: thumb, message: b.primary, title: b.headline, link_description: b.desc, call_to_action: { ...cta, value: compact({ ...cta.value, link_caption: b.displayLink }) } });
   } else {
     const videoId = await uploadVideo(blob, a, step);
@@ -2354,6 +2416,7 @@ async function launchOne(b, a, link, adsetId, status) {
     const thumbHash = await uploadImage(await videoThumb(blob), a.name + '_thumb.jpg');
     step('waiting for Meta to process video');
     await waitForVideo(videoId);
+    media = { video: videoId, thumbHash };
     spec.video_data = compact({ video_id: videoId, image_hash: thumbHash, message: b.primary, title: b.headline, link_description: b.desc, call_to_action: { ...cta, value: compact({ ...cta.value, link_caption: b.displayLink }) } });
   }
 
@@ -2366,7 +2429,29 @@ async function launchOne(b, a, link, adsetId, status) {
     if (b.partnerIg) creative.instagram_branded_content = { sponsor_id: b.partnerIg };
     if (b.partnerPage) creative.facebook_branded_content = { sponsor_page_id: b.partnerPage };
   }
-  const creativeId = await createCreative(creative, b);
+  let creativeId;
+  const texts = copyOptions(b, 'primary'), heads = copyOptions(b, 'headline');
+  if (texts.length > 1 || heads.length > 1) {
+    // several primary texts / headlines in one ad: Meta shows each person the combination that works best
+    const feed = compact({
+      bodies: texts.map(text => ({ text })),
+      titles: heads.length ? heads.map(text => ({ text })) : undefined,
+      descriptions: b.desc ? [{ text: b.desc }] : undefined,
+      link_urls: [compact({ website_url: link, display_url: b.displayLink })],
+      call_to_action_types: [b.cta],
+      ad_formats: [media.image ? 'SINGLE_IMAGE' : 'SINGLE_VIDEO'],
+      optimization_type: 'DEGREES_OF_FREEDOM',
+    });
+    if (media.image) feed.images = [{ hash: media.image }];
+    else feed.videos = [compact({ video_id: media.video, thumbnail_url: media.thumbUrl, thumbnail_hash: media.thumbHash })];
+    const multi = { ...creative, object_story_spec: compact({ page_id: spec.page_id, instagram_user_id: spec.instagram_user_id }), asset_feed_spec: feed };
+    try {
+      creativeId = await createCreative(multi, b);
+    } catch (err) {
+      log(`${a.name}: Meta did not accept ${texts.length} primary texts / ${heads.length} headlines (${err.message}). Made the ad with the first one; add the others in Ads Manager.`, 'err');
+    }
+  }
+  creativeId ||= await createCreative(creative, b);
   const { id: adId } = await api(`${acct()}/ads`, {
     method: 'POST', params: { name, adset_id: adsetId, creative: { creative_id: creativeId }, status },
   });
